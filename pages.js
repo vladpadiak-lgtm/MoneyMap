@@ -34,7 +34,7 @@ const TRANSACTION_SEED = [
 ];
 
 const DEFAULT_STATE = {
-  profile: { name: "Влад", email: "demo@moneymap.app", registered: false },
+  profile: { name: "Влад", email: "demo@moneymap.app", registered: false, signedIn: false, passwordSalt: "", passwordHash: "" },
   categories: CATEGORY_SEED,
   transactions: TRANSACTION_SEED,
   budgets: [
@@ -76,7 +76,9 @@ function clone(value) {
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved?.transactions && saved?.categories && saved?.budgets && saved?.goals) return saved;
+    if (saved?.transactions && saved?.categories && saved?.budgets && saved?.goals) {
+      return { ...saved, profile: { ...DEFAULT_STATE.profile, ...saved.profile } };
+    }
   } catch {
     // Ignore corrupted browser data and restore the safe demo state.
   }
@@ -85,6 +87,19 @@ function loadState() {
 
 function persist() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function randomSalt() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+}
+
+async function passwordDigest(password, saltHex) {
+  const encoder = new TextEncoder();
+  const salt = Uint8Array.from(saltHex.match(/.{2}/g) ?? [], value => Number.parseInt(value, 16));
+  const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const digest = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 120000, hash: "SHA-256" }, key, 256);
+  return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("");
 }
 
 function esc(value) {
@@ -195,10 +210,12 @@ function authView(route) {
       <section class="auth-card">
         <span class="auth-kicker">${register ? "Почніть із ясності" : "Раді бачити знову"}</span>
         <h1>${register ? "Створіть власну карту грошей" : registered ? "Ваш профіль готовий" : "Увійдіть у фінансовий простір"}</h1>
-        <p>${register ? "Профіль і всі фінансові записи зберігатимуться локально у цьому браузері." : "Введіть email профілю. Окремий пароль для локальної Pages‑версії не потрібен."}</p>
+        <p>${register ? "Профіль і всі фінансові записи зберігатимуться локально у цьому браузері." : "Введіть email і пароль свого локального профілю."}</p>
         <form class="pages-auth-form" data-form="auth" data-mode="${route}">
           ${register ? `<label><span>Ваше ім’я</span><input name="name" required autocomplete="name" value="${esc(registered ? state.profile.name : "")}" placeholder="Наприклад, Влад"></label>` : ""}
           <label><span>Email</span><input name="email" type="email" required autocomplete="email" value="${esc(registered ? state.profile.email : "")}" placeholder="name@example.com"></label>
+          <label><span>Пароль</span><input name="password" type="password" minlength="8" required autocomplete="${register ? "new-password" : "current-password"}" placeholder="Щонайменше 8 символів"></label>
+          <p class="pages-form-error auth-error" hidden></p>
           <button class="button ${register ? "button-lime" : "button-dark"}" type="submit">${register ? "Створити MoneyMap" : "Увійти"} <span>→</span></button>
         </form>
         <small>${register ? "Вже маєте профіль?" : "Ще немає профілю?"} <a href="#${register ? "login" : "register"}">${register ? "Увійти" : "Створити MoneyMap"}</a></small>
@@ -499,17 +516,34 @@ root.addEventListener("click",event=>{
   if(action==="backdrop"&&event.target===trigger) closeModal();
   if(action==="export-csv") exportCsv();
   if(action==="import-csv") document.querySelector("#csv-import")?.click();
-  if(action==="logout") { state.profile.registered=false; persist(); location.hash="#home"; toast("Ви вийшли з локального профілю"); }
+  if(action==="logout") { state.profile.signedIn=false; persist(); location.hash="#home"; toast("Ви вийшли з локального профілю"); }
 });
 
-root.addEventListener("submit",event=>{
+root.addEventListener("submit",async event=>{
   const form=event.target.closest("form[data-form]");
   if(!form) return;
   event.preventDefault();
   if(form.dataset.form==="auth"){
     const values=Object.fromEntries(new FormData(form));
-    state.profile={name:(values.name||state.profile.name||String(values.email).split("@")[0]).trim(),email:String(values.email).trim(),registered:true};
-    persist(); location.hash="#dashboard"; toast(form.dataset.mode==="register"?"Профіль створено":"Вхід виконано");
+    const email=String(values.email).trim().toLocaleLowerCase("uk");
+    const password=String(values.password);
+    const error=form.querySelector(".pages-form-error");
+    const button=form.querySelector("button[type='submit']");
+    const reject=message=>{error.textContent=message;error.hidden=false;button.disabled=false;};
+    error.hidden=true;
+    button.disabled=true;
+    if(password.length<8){reject("Пароль має містити щонайменше 8 символів.");return;}
+    if(form.dataset.mode==="register"){
+      const salt=randomSalt();
+      state.profile={name:String(values.name).trim(),email,registered:true,signedIn:true,passwordSalt:salt,passwordHash:await passwordDigest(password,salt)};
+      persist(); location.hash="#dashboard"; toast("Профіль створено");
+    } else {
+      if(!state.profile.registered||!state.profile.passwordSalt||email!==state.profile.email.toLocaleLowerCase("uk")){reject("Неправильний email або пароль.");return;}
+      const digest=await passwordDigest(password,state.profile.passwordSalt);
+      if(digest!==state.profile.passwordHash){reject("Неправильний email або пароль.");return;}
+      state.profile.signedIn=true;
+      persist(); location.hash="#dashboard"; toast("Вхід виконано");
+    }
   }
   if(form.dataset.form==="transaction") saveTransaction(form);
   if(form.dataset.form==="budget") saveBudget(form);
