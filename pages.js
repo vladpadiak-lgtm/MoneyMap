@@ -1,4 +1,5 @@
 import { csvEscape, parseCsv } from "./pages-csv.js";
+import { createEmptyState, migrateSavedState, STATE_VERSION } from "./pages-state.js";
 
 const STORAGE_KEY = "moneymap.github-pages.v1";
 const AUTH_SESSION_KEY = "moneymap.github-pages.auth";
@@ -38,21 +39,34 @@ const TRANSACTION_SEED = [
   { id: 118, categoryId: 3, type: "expense", amountCents: 87000, description: "Оренда квартири", merchant: "Оренда", date: "2026-03-02", note: "" },
 ];
 
-const DEFAULT_STATE = {
-  profile: { name: "Влад", email: "demo@moneymap.app", registered: false, passwordSalt: "", passwordHash: "" },
+const DEFAULT_PROFILE = {
+  name: "",
+  email: "",
+  registered: false,
+  passwordSalt: "",
+  passwordHash: "",
+};
+
+const BUDGET_SEED = [
+  { id: 201, categoryId: 4, month: CURRENT_MONTH, limitCents: 45000 },
+  { id: 202, categoryId: 5, month: CURRENT_MONTH, limitCents: 15000 },
+  { id: 203, categoryId: 6, month: CURRENT_MONTH, limitCents: 20000 },
+  { id: 204, categoryId: 7, month: CURRENT_MONTH, limitCents: 12000 },
+];
+
+const GOAL_SEED = [
+  { id: 301, name: "Подушка безпеки", targetCents: 600000, currentCents: 378000, deadline: "2027-02-01", color: "#C7F34A", icon: "◆", status: "active" },
+  { id: 302, name: "Подорож до Ісландії", targetCents: 280000, currentCents: 154000, deadline: "2027-06-15", color: "#A7D8FF", icon: "↗", status: "active" },
+  { id: 303, name: "Новий ноутбук", targetCents: 180000, currentCents: 162000, deadline: "2026-11-30", color: "#F5A782", icon: "▰", status: "active" },
+];
+
+const DEMO_STATE = {
+  dataVersion: STATE_VERSION,
+  profile: { ...DEFAULT_PROFILE, name: "Влад", email: "demo@moneymap.app" },
   categories: CATEGORY_SEED,
   transactions: TRANSACTION_SEED,
-  budgets: [
-    { id: 201, categoryId: 4, month: CURRENT_MONTH, limitCents: 45000 },
-    { id: 202, categoryId: 5, month: CURRENT_MONTH, limitCents: 15000 },
-    { id: 203, categoryId: 6, month: CURRENT_MONTH, limitCents: 20000 },
-    { id: 204, categoryId: 7, month: CURRENT_MONTH, limitCents: 12000 },
-  ],
-  goals: [
-    { id: 301, name: "Подушка безпеки", targetCents: 600000, currentCents: 378000, deadline: "2027-02-01", color: "#C7F34A", icon: "◆", status: "active" },
-    { id: 302, name: "Подорож до Ісландії", targetCents: 280000, currentCents: 154000, deadline: "2027-06-15", color: "#A7D8FF", icon: "↗", status: "active" },
-    { id: 303, name: "Новий ноутбук", targetCents: 180000, currentCents: 162000, deadline: "2026-11-30", color: "#F5A782", icon: "▰", status: "active" },
-  ],
+  budgets: BUDGET_SEED,
+  goals: GOAL_SEED,
 };
 
 const NAV = [
@@ -74,6 +88,10 @@ let filters = { search: "", type: "all", category: "all", month: "all" };
 let toastTimer;
 let signedIn = sessionStorage.getItem(AUTH_SESSION_KEY) === "1";
 let demoMode = sessionStorage.getItem(DEMO_SESSION_KEY) === "1";
+if (demoMode) {
+  state = clone(DEMO_STATE);
+  signedIn = false;
+}
 let lastFocusedElement = null;
 const root = document.querySelector("#site-root");
 
@@ -81,20 +99,40 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function emptyState(profile = DEFAULT_PROFILE) {
+  return createEmptyState(profile, CATEGORY_SEED);
+}
+
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved?.transactions && saved?.categories && saved?.budgets && saved?.goals) {
-      return { ...saved, profile: { ...DEFAULT_STATE.profile, ...saved.profile } };
+    if (saved) {
+      const migrated = migrateSavedState(saved, {
+        emptyState: emptyState(),
+        transactionSeed: TRANSACTION_SEED,
+        budgetSeed: BUDGET_SEED,
+        goalSeed: GOAL_SEED,
+      });
+      if (saved.dataVersion !== STATE_VERSION) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+      }
+      return migrated;
     }
   } catch {
-    // Ignore corrupted browser data and restore the safe demo state.
+    // Ignore corrupted browser data and restore a safe empty account.
   }
-  return clone(DEFAULT_STATE);
+  return emptyState();
 }
 
 function persist() {
+  if (demoMode) return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function exitDemo() {
+  demoMode = false;
+  sessionStorage.removeItem(DEMO_SESSION_KEY);
+  state = loadState();
 }
 
 function randomSalt() {
@@ -153,6 +191,7 @@ function brand(extra = "") {
 
 function render() {
   const route = currentRoute();
+  if ((route === "login" || route === "register") && demoMode) exitDemo();
   document.title = route === "home" ? "MoneyMap — особисті фінанси без хаосу" : `${VIEW_META[route]?.[0] ?? "MoneyMap"} — MoneyMap`;
   if (route === "home") root.innerHTML = landingView();
   else if (route === "login" || route === "register") root.innerHTML = authView(route);
@@ -535,7 +574,7 @@ root.addEventListener("click",event=>{
     localStorage.removeItem(STORAGE_KEY);
     sessionStorage.removeItem(AUTH_SESSION_KEY);
     sessionStorage.removeItem(DEMO_SESSION_KEY);
-    state=clone(DEFAULT_STATE);
+    state=emptyState();
     filters={search:"",type:"all",category:"all",month:"all"};
     signedIn=false;
     demoMode=false;
@@ -545,6 +584,7 @@ root.addEventListener("click",event=>{
     toast("Локальні дані очищено");
   }
   if(action==="start-demo") {
+    state=clone(DEMO_STATE);
     signedIn=false;
     demoMode=true;
     sessionStorage.removeItem(AUTH_SESSION_KEY);
@@ -555,10 +595,12 @@ root.addEventListener("click",event=>{
   if(action==="export-csv") exportCsv();
   if(action==="import-csv") document.querySelector("#csv-import")?.click();
   if(action==="logout") {
+    const leavingDemo=demoMode;
     signedIn=false;
     demoMode=false;
     sessionStorage.removeItem(AUTH_SESSION_KEY);
     sessionStorage.removeItem(DEMO_SESSION_KEY);
+    if(leavingDemo) state=loadState();
     location.hash="#home";
     toast("Ви вийшли з локального профілю");
   }
@@ -583,6 +625,7 @@ root.addEventListener("submit",async event=>{
         const name=String(values.name).trim();
         if(!name){reject("Вкажіть ім’я профілю.");return;}
         const salt=randomSalt();
+        if(!state.profile.registered) state=emptyState();
         state.profile={name,email,registered:true,passwordSalt:salt,passwordHash:await passwordDigest(password,salt)};
         signedIn=true;
         demoMode=false;

@@ -81,7 +81,10 @@ test("keeps the GitHub Pages edition accessible and free of system prompts", asy
     readFile(new URL("pages.css", root), "utf8"),
   ]);
   assert.match(html, /<noscript>/);
+  assert.match(html, /pages\.js\?v=4/);
   assert.doesNotMatch(script, /window\.prompt|prompt\(/);
   assert.match(script, /AUTH_SESSION_KEY/);
+  assert.match(script, /state=emptyState\(\)/);
+  assert.match(script, /state=clone\(DEMO_STATE\)/);
   assert.match(styles, /\.pages-static \.table-body \.transaction-row/);
 });
