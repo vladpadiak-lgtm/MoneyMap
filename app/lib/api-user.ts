@@ -42,12 +42,15 @@ export async function requireApiUser() {
     .limit(1);
 
   if (existing.length === 0) {
-    await db.insert(categories).values(
-      DEFAULT_CATEGORIES.map((category) => ({
-        ...category,
-        userId: authUser.userId,
-      })),
-    );
+    await db
+      .insert(categories)
+      .values(
+        DEFAULT_CATEGORIES.map((category) => ({
+          ...category,
+          userId: authUser.userId,
+        })),
+      )
+      .onConflictDoNothing();
   }
 
   return { authUser, db };
@@ -72,9 +75,6 @@ export function badRequest(message: string) {
 }
 
 export function serverError(error: unknown) {
-  const message = error instanceof Error ? error.message : "Невідома помилка";
-  return Response.json(
-    { error: "Не вдалося обробити запит.", detail: message },
-    { status: 500 },
-  );
+  void error;
+  return Response.json({ error: "Не вдалося обробити запит." }, { status: 500 });
 }
