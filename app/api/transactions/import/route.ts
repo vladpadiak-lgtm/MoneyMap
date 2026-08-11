@@ -1,11 +1,17 @@
-import { transactions } from "../../../../db/schema";
+import { eq } from "drizzle-orm";
+import { categories, transactions } from "../../../../db/schema";
 import {
   badRequest,
   requireApiUser,
   serverError,
   unauthorized,
-  userOwnsCategory,
 } from "../../../lib/api-user";
+import {
+  isIsoDate,
+  isOptionalTextWithin,
+  isPositiveMoney,
+  isTextWithin,
+} from "../../../lib/validation";
 
 export async function POST(request: Request) {
   try {
@@ -27,27 +33,39 @@ export async function POST(request: Request) {
       return badRequest("CSV має містити від 1 до 500 рядків.");
     }
 
+    const categoryRows = await context.db
+      .select({ id: categories.id, type: categories.type })
+      .from(categories)
+      .where(eq(categories.userId, context.authUser.userId));
+    const categoryMap = new Map(categoryRows.map((category) => [category.id, category]));
     const values = [];
     for (const row of rows) {
-      const category = await userOwnsCategory(context.authUser.userId, Number(row.categoryId));
+      const categoryId = Number(row.categoryId);
+      const category = categoryMap.get(categoryId);
       const amountCents = Math.round(Number(row.amountCents));
+      const description = row.description?.trim() ?? "";
+      const merchant = row.merchant?.trim() ?? "";
+      const note = row.note?.trim() ?? "";
       if (
         !category ||
-        amountCents <= 0 ||
-        !row.description?.trim() ||
-        !/^\d{4}-\d{2}-\d{2}$/.test(row.date)
+        row.type !== category.type ||
+        !isPositiveMoney(amountCents) ||
+        !isTextWithin(description, 160) ||
+        !isIsoDate(row.date) ||
+        !isOptionalTextWithin(merchant, 120) ||
+        !isOptionalTextWithin(note, 500)
       ) {
         return badRequest("Один або кілька рядків CSV мають некоректні дані.");
       }
       values.push({
         userId: context.authUser.userId,
-        categoryId: Number(row.categoryId),
-        type: row.type === "income" ? "income" as const : category.type,
+        categoryId,
+        type: category.type,
         amountCents,
-        description: row.description.trim(),
-        merchant: row.merchant?.trim() ?? "",
+        description,
+        merchant,
         date: row.date,
-        note: row.note?.trim() ?? "",
+        note,
       });
     }
 
