@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useId, useRef, useState } from "react";
+import { csvEscape, parseCsv } from "../../pages-csv.js";
+import { isIsoDate } from "../lib/validation";
 
 export type ViewName = "dashboard" | "transactions" | "budgets" | "goals";
 
@@ -54,7 +56,8 @@ type UserSummary = {
   email: string;
 };
 
-const CURRENT_MONTH = "2026-08";
+const TODAY = new Date().toISOString().slice(0, 10);
+const CURRENT_MONTH = TODAY.slice(0, 7);
 
 const DEMO_DATA: FinanceData = {
   categories: [
@@ -179,6 +182,7 @@ export function FinanceApp({
   const [transactionModal, setTransactionModal] = useState<Transaction | "new" | null>(null);
   const [budgetModal, setBudgetModal] = useState<Budget | "new" | null>(null);
   const [goalModal, setGoalModal] = useState(false);
+  const [contributionGoal, setContributionGoal] = useState<Goal | null>(null);
   const [toast, setToast] = useState("");
 
   const loadData = async () => {
@@ -302,15 +306,8 @@ export function FinanceApp({
             {activeView === "goals" && (
               <GoalsView
                 data={data}
-                demo={demo}
                 onAdd={() => setGoalModal(true)}
-                onUpdate={(goal) =>
-                  setData((current) => ({
-                    ...current,
-                    goals: current.goals.map((item) => (item.id === goal.id ? goal : item)),
-                  }))
-                }
-                onToast={setToast}
+                onContribute={setContributionGoal}
               />
             )}
           </>
@@ -343,6 +340,21 @@ export function FinanceApp({
           nextId={Math.max(0, ...data.goals.map((item) => item.id)) + 1}
           onClose={() => setGoalModal(false)}
           onSave={onSavedGoal}
+        />
+      )}
+      {contributionGoal && (
+        <ContributionModal
+          goal={contributionGoal}
+          demo={demo}
+          onClose={() => setContributionGoal(null)}
+          onSave={(goal) => {
+            setData((current) => ({
+              ...current,
+              goals: current.goals.map((item) => (item.id === goal.id ? goal : item)),
+            }));
+            setContributionGoal(null);
+            setToast("Прогрес цілі оновлено");
+          }}
         />
       )}
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
@@ -400,7 +412,7 @@ function MobileNav({ activeView, demo }: { activeView: ViewName; demo: boolean }
   );
 }
 
-function AppHeader({ activeView, onAdd, user }: { activeView: ViewName; onAdd: () => void; user: UserSummary }) {
+function AppHeader({ activeView, onAdd, user, addDisabled = false }: { activeView: ViewName; onAdd: () => void; user: UserSummary; addDisabled?: boolean }) {
   return (
     <header className="app-header">
       <div className="mobile-brand"><Logo compact /></div>
@@ -409,9 +421,8 @@ function AppHeader({ activeView, onAdd, user }: { activeView: ViewName; onAdd: (
         <h1>{VIEW_META[activeView].title}</h1>
       </div>
       <div className="header-actions">
-        <button className="icon-button" type="button" aria-label="Сповіщення">•<i /></button>
         <span className="header-avatar" title={user.displayName}>{user.displayName.slice(0, 1).toUpperCase()}</span>
-        <button className="button button-dark header-add" type="button" onClick={onAdd}>
+        <button className="button button-dark header-add" type="button" onClick={onAdd} disabled={addDisabled}>
           <span aria-hidden="true">＋</span> Додати транзакцію
         </button>
       </div>
@@ -568,8 +579,10 @@ function TransactionsView({ data, demo, onAdd, onEdit, onImported }: { data: Fin
     const link = document.createElement("a");
     link.href = url;
     link.download = `moneymap-transactions-${CURRENT_MONTH}.csv`;
+    document.body.append(link);
     link.click();
-    URL.revokeObjectURL(url);
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const importCsv = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -577,22 +590,29 @@ function TransactionsView({ data, demo, onAdd, onEdit, onImported }: { data: Fin
     if (!file) return;
     setImportError("");
     try {
-      const parsed = parseCsv(await file.text());
+      const parsed = parseCsv(await file.text()) as Array<Record<string, string>>;
+      if (parsed.length === 0 || parsed.length > 500) {
+        throw new Error("CSV має містити від 1 до 500 рядків.");
+      }
       const rows = parsed.map((row, index) => {
-        const category = data.categories.find((item) => item.name.toLocaleLowerCase("uk") === row.category?.toLocaleLowerCase("uk") && item.type === row.type);
+        if (row.type !== "income" && row.type !== "expense") {
+          throw new Error(`Помилка у рядку ${index + 2}: тип має бути income або expense.`);
+        }
+        const transactionType: Transaction["type"] = row.type;
+        const category = data.categories.find((item) => item.name.toLocaleLowerCase("uk") === row.category?.toLocaleLowerCase("uk") && item.type === transactionType);
         const amount = Number(String(row.amount ?? "").replace(",", "."));
-        if (!category || !row.date || !row.description || !Number.isFinite(amount) || amount <= 0) {
+        if (!category || !isIsoDate(row.date) || !row.description?.trim() || !Number.isFinite(amount) || amount <= 0) {
           throw new Error(`Помилка у рядку ${index + 2}: перевірте дату, тип, категорію, опис і суму.`);
         }
         return {
           id: Date.now() + index,
           categoryId: category.id,
-          type: row.type === "income" ? "income" as const : "expense" as const,
+          type: transactionType,
           amountCents: Math.round(amount * 100),
-          description: row.description,
-          merchant: row.merchant ?? "",
+          description: row.description.trim().slice(0, 160),
+          merchant: (row.merchant ?? "").slice(0, 120),
           date: row.date,
-          note: row.note ?? "",
+          note: (row.note ?? "").slice(0, 500),
         };
       });
       if (!rows.length) throw new Error("У файлі немає рядків для імпорту.");
@@ -694,26 +714,9 @@ function BudgetsView({ data, onAdd, onEdit }: { data: FinanceData; onAdd: () => 
   );
 }
 
-function GoalsView({ data, demo, onAdd, onUpdate, onToast }: { data: FinanceData; demo: boolean; onAdd: () => void; onUpdate: (goal: Goal) => void; onToast: (message: string) => void }) {
+function GoalsView({ data, onAdd, onContribute }: { data: FinanceData; onAdd: () => void; onContribute: (goal: Goal) => void }) {
   const totalTarget = data.goals.reduce((sum, item) => sum + item.targetCents, 0);
   const totalCurrent = data.goals.reduce((sum, item) => sum + item.currentCents, 0);
-  const contribute = async (goal: Goal) => {
-    const value = window.prompt(`Скільки додати до цілі «${goal.name}»?`, "100");
-    if (value === null) return;
-    const amountCents = Math.round(Number(value.replace(",", ".")) * 100);
-    if (!Number.isFinite(amountCents) || amountCents <= 0) return;
-    const nextCurrent = Math.min(goal.targetCents, goal.currentCents + amountCents);
-    const nextGoal = { ...goal, currentCents: nextCurrent, status: nextCurrent >= goal.targetCents ? "completed" as const : goal.status };
-    try {
-      if (!demo) {
-        const response = await apiRequest<{ goal: Goal }>(`/api/goals/${goal.id}`, { method: "PATCH", body: JSON.stringify({ currentCents: nextCurrent, status: nextGoal.status }) });
-        onUpdate(response.goal);
-      } else onUpdate(nextGoal);
-      onToast("Прогрес цілі оновлено");
-    } catch (updateError) {
-      onToast(updateError instanceof Error ? updateError.message : "Помилка оновлення");
-    }
-  };
   return (
     <div className="page-stack">
       <section className="goal-summary">
@@ -724,7 +727,7 @@ function GoalsView({ data, demo, onAdd, onUpdate, onToast }: { data: FinanceData
       <section className="goals-grid">
         {data.goals.length ? data.goals.map((goal) => {
           const percentage = Math.min(100, Math.round((goal.currentCents / goal.targetCents) * 100));
-          const days = Math.max(0, Math.ceil((new Date(goal.deadline).getTime() - new Date("2026-08-10").getTime()) / 86400000));
+          const days = Math.max(0, Math.ceil((new Date(goal.deadline).getTime() - new Date(TODAY).getTime()) / 86400000));
           return (
             <article className="goal-card" key={goal.id}>
               <div className="goal-icon" style={{ background: goal.color }}>{categoryIcon(goal.icon)}</div>
@@ -733,13 +736,61 @@ function GoalsView({ data, demo, onAdd, onUpdate, onToast }: { data: FinanceData
               <div className="goal-amount"><strong>{money(goal.currentCents)}</strong><span>/ {money(goal.targetCents)}</span></div>
               <div className="progress-track"><i style={{ width: `${percentage}%`, background: goal.color }} /></div>
               <div className="goal-meta"><span><strong>{percentage}%</strong> зібрано</span><span><strong>{days}</strong> днів</span></div>
-              <button className="button button-soft" type="button" onClick={() => void contribute(goal)}>{goal.status === "completed" ? "Ціль досягнуто ✓" : "Поповнити ціль →"}</button>
+              <button className="button button-soft" type="button" disabled={goal.status === "completed"} onClick={() => onContribute(goal)}>{goal.status === "completed" ? "Ціль досягнуто ✓" : "Поповнити ціль →"}</button>
             </article>
           );
         }) : <div className="empty-card-wide"><EmptyInline text="Додайте фінансову ціль, щоб бачити прогрес." /><button className="button button-dark" type="button" onClick={onAdd}>Створити ціль</button></div>}
         <button className="goal-add-card" type="button" onClick={onAdd}><span>◎</span><strong>Нова мрія — новий план</strong><small>Вкажіть суму й дедлайн, а MoneyMap допоможе тримати темп.</small></button>
       </section>
     </div>
+  );
+}
+
+function ContributionModal({ goal, demo, onClose, onSave }: { goal: Goal; demo: boolean; onClose: () => void; onSave: (value: Goal) => void }) {
+  const [amount, setAmount] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const remaining = Math.max(0, goal.targetCents - goal.currentCents);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const amountCents = Math.round(Number(amount.replace(",", ".")) * 100);
+    if (!Number.isFinite(amountCents) || amountCents <= 0) {
+      setError("Вкажіть суму більше нуля.");
+      return;
+    }
+    const currentCents = Math.min(goal.targetCents, goal.currentCents + amountCents);
+    const nextGoal: Goal = {
+      ...goal,
+      currentCents,
+      status: currentCents >= goal.targetCents ? "completed" : "active",
+    };
+    setSaving(true);
+    setError("");
+    try {
+      if (demo) onSave(nextGoal);
+      else {
+        const response = await apiRequest<{ goal: Goal }>(`/api/goals/${goal.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ currentCents, status: nextGoal.status }),
+        });
+        onSave(response.goal);
+      }
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Не вдалося оновити ціль.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={`Поповнити «${goal.name}»`} subtitle={`До цілі залишилося ${money(remaining)}`} onClose={onClose}>
+      <form className="form-grid" onSubmit={submit}>
+        <label className="full"><span>Сума поповнення, €</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="100" /></label>
+        {error && <p className="form-error full" role="alert">{error}</p>}
+        <div className="form-actions full"><button className="button button-ghost" type="button" onClick={onClose}>Скасувати</button><button className="button button-dark" type="submit" disabled={saving}>{saving ? "Оновлюємо…" : "Додати до цілі"}</button></div>
+      </form>
+    </Modal>
   );
 }
 
@@ -753,7 +804,7 @@ function TransactionModal({ value, categories, demo, nextId, onClose, onSave }: 
     merchant: editing ? value.merchant : "",
     categoryId: String(editing ? value.categoryId : matchingCategories[0]?.id ?? ""),
     amount: editing ? String(value.amountCents / 100) : "",
-    date: editing ? value.date : "2026-08-10",
+    date: editing ? value.date : TODAY,
     note: editing ? value.note : "",
   });
   const [saving, setSaving] = useState(false);
@@ -762,7 +813,7 @@ function TransactionModal({ value, categories, demo, nextId, onClose, onSave }: 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const amountCents = Math.round(Number(form.amount.replace(",", ".")) * 100);
-    if (!form.description.trim() || !form.categoryId || !Number.isFinite(amountCents) || amountCents <= 0) {
+    if (!form.description.trim() || !form.categoryId || !Number.isFinite(amountCents) || amountCents <= 0 || !isIsoDate(form.date)) {
       setError("Заповніть опис, категорію та коректну суму.");
       return;
     }
@@ -796,12 +847,12 @@ function TransactionModal({ value, categories, demo, nextId, onClose, onSave }: 
     <Modal title={editing ? "Редагувати транзакцію" : "Нова транзакція"} subtitle="Дані одразу потраплять у звіти й бюджети" onClose={onClose}>
       <form className="form-grid" onSubmit={submit}>
         <div className="segmented-control" role="group" aria-label="Тип транзакції"><button type="button" className={type === "expense" ? "active" : ""} onClick={() => { setType("expense"); setForm((current) => ({ ...current, categoryId: String(categories.find((item) => item.type === "expense")?.id ?? "") })); }}>Витрата</button><button type="button" className={type === "income" ? "active" : ""} onClick={() => { setType("income"); setForm((current) => ({ ...current, categoryId: String(categories.find((item) => item.type === "income")?.id ?? "") })); }}>Дохід</button></div>
-        <label className="full"><span>Опис *</span><input required value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Наприклад, продукти на тиждень" /></label>
+        <label className="full"><span>Опис *</span><input required maxLength={160} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Наприклад, продукти на тиждень" /></label>
         <label><span>Сума, € *</span><input required inputMode="decimal" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="0,00" /></label>
         <label><span>Дата *</span><input required type="date" value={form.date} onChange={(event) => setForm({ ...form, date: event.target.value })} /></label>
         <label><span>Категорія *</span><select value={form.categoryId} onChange={(event) => setForm({ ...form, categoryId: event.target.value })}>{matchingCategories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label><span>Магазин / джерело</span><input value={form.merchant} onChange={(event) => setForm({ ...form, merchant: event.target.value })} placeholder="Необов’язково" /></label>
-        <label className="full"><span>Нотатка</span><textarea value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Додайте деталі" rows={3} /></label>
+        <label><span>Магазин / джерело</span><input maxLength={120} value={form.merchant} onChange={(event) => setForm({ ...form, merchant: event.target.value })} placeholder="Необов’язково" /></label>
+        <label className="full"><span>Нотатка</span><textarea maxLength={500} value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Додайте деталі" rows={3} /></label>
         {error && <p className="form-error full" role="alert">{error}</p>}
         <div className="form-actions full"><button className="button button-ghost" type="button" onClick={onClose}>Скасувати</button><button className="button button-dark" type="submit" disabled={saving}>{saving ? "Зберігаємо…" : editing ? "Зберегти зміни" : "Додати транзакцію"}</button></div>
       </form>
@@ -819,7 +870,7 @@ function BudgetModal({ value, categories, demo, nextId, onClose, onSave }: { val
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const limitCents = Math.round(Number(limit.replace(",", ".")) * 100);
-    if (!categoryId || !Number.isFinite(limitCents) || limitCents <= 0) return setError("Вкажіть коректний ліміт.");
+    if (!categoryId || !Number.isFinite(limitCents) || limitCents <= 0 || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return setError("Вкажіть коректний місяць і ліміт.");
     const budget = { id: editing ? value.id : nextId, categoryId: Number(categoryId), month, limitCents };
     try {
       if (demo) onSave(budget);
@@ -833,8 +884,8 @@ function BudgetModal({ value, categories, demo, nextId, onClose, onSave }: { val
     <Modal title={editing ? "Змінити бюджет" : "Новий бюджет"} subtitle="Окремий ліміт для однієї категорії" onClose={onClose}>
       <form className="form-grid" onSubmit={submit}>
         <label className="full"><span>Категорія</span><select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>{expenseCategories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label><span>Місяць</span><input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>
-        <label><span>Ліміт, €</span><input inputMode="decimal" value={limit} onChange={(event) => setLimit(event.target.value)} placeholder="500" /></label>
+        <label><span>Місяць</span><input required type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>
+        <label><span>Ліміт, €</span><input required inputMode="decimal" value={limit} onChange={(event) => setLimit(event.target.value)} placeholder="500" /></label>
         {error && <p className="form-error full">{error}</p>}
         <div className="form-actions full"><button className="button button-ghost" type="button" onClick={onClose}>Скасувати</button><button className="button button-dark" type="submit">Зберегти бюджет</button></div>
       </form>
@@ -849,7 +900,7 @@ function GoalModal({ demo, nextId, onClose, onSave }: { demo: boolean; nextId: n
     event.preventDefault();
     const targetCents = Math.round(Number(form.target.replace(",", ".")) * 100);
     const currentCents = Math.round(Number((form.current || "0").replace(",", ".")) * 100);
-    if (!form.name.trim() || targetCents <= 0 || currentCents < 0 || currentCents > targetCents) return setError("Перевірте назву та суми цілі.");
+    if (!form.name.trim() || !Number.isFinite(targetCents) || !Number.isFinite(currentCents) || targetCents <= 0 || currentCents < 0 || currentCents > targetCents || !isIsoDate(form.deadline)) return setError("Перевірте назву, суми та дедлайн цілі.");
     const goal: Goal = { id: nextId, name: form.name.trim(), targetCents, currentCents, deadline: form.deadline, color: form.color, icon: form.icon, status: currentCents >= targetCents ? "completed" : "active" };
     try {
       if (demo) onSave(goal);
@@ -862,10 +913,10 @@ function GoalModal({ demo, nextId, onClose, onSave }: { demo: boolean; nextId: n
   return (
     <Modal title="Нова фінансова ціль" subtitle="Перетворіть мрію на зрозумілий план" onClose={onClose}>
       <form className="form-grid" onSubmit={submit}>
-        <label className="full"><span>Назва цілі</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Наприклад, подорож до Японії" /></label>
-        <label><span>Потрібна сума, €</span><input inputMode="decimal" value={form.target} onChange={(event) => setForm({ ...form, target: event.target.value })} placeholder="3000" /></label>
+        <label className="full"><span>Назва цілі</span><input required maxLength={120} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Наприклад, подорож до Японії" /></label>
+        <label><span>Потрібна сума, €</span><input required inputMode="decimal" value={form.target} onChange={(event) => setForm({ ...form, target: event.target.value })} placeholder="3000" /></label>
         <label><span>Вже накопичено, €</span><input inputMode="decimal" value={form.current} onChange={(event) => setForm({ ...form, current: event.target.value })} placeholder="0" /></label>
-        <label><span>Дедлайн</span><input type="date" value={form.deadline} onChange={(event) => setForm({ ...form, deadline: event.target.value })} /></label>
+        <label><span>Дедлайн</span><input required type="date" value={form.deadline} onChange={(event) => setForm({ ...form, deadline: event.target.value })} /></label>
         <label><span>Колір</span><select value={form.color} onChange={(event) => setForm({ ...form, color: event.target.value })}><option value="#C7F34A">Лайм</option><option value="#A7D8FF">Блакитний</option><option value="#F5A782">Кораловий</option><option value="#B8A8E8">Лавандовий</option></select></label>
         {error && <p className="form-error full">{error}</p>}
         <div className="form-actions full"><button className="button button-ghost" type="button" onClick={onClose}>Скасувати</button><button className="button button-dark" type="submit">Створити ціль</button></div>
@@ -875,10 +926,50 @@ function GoalModal({ demo, nextId, onClose, onSave }: { demo: boolean; nextId: n
 }
 
 function Modal({ title, subtitle, onClose, children }: { title: string; subtitle: string; onClose: () => void; children: React.ReactNode }) {
+  const titleId = useId();
+  const dialogRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    document.body.classList.add("modal-open");
+    const firstControl = dialog?.querySelector<HTMLElement>("form input:not([type='hidden']), form select, form textarea, form button")
+      ?? dialog?.querySelector<HTMLElement>("button, a[href]");
+    firstControl?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]):not([type='hidden']), select:not([disabled]), textarea:not([disabled]), a[href]")]
+        .filter((element) => element.offsetParent !== null);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.classList.remove("modal-open");
+      previous?.focus();
+    };
+  }, [onClose]);
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-        <div className="modal-heading"><div><span className="eyebrow">MoneyMap</span><h2 id="modal-title">{title}</h2><p>{subtitle}</p></div><button type="button" onClick={onClose} aria-label="Закрити">×</button></div>
+      <section ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        <div className="modal-heading"><div><span className="eyebrow">MoneyMap</span><h2 id={titleId}>{title}</h2><p>{subtitle}</p></div><button type="button" onClick={onClose} aria-label="Закрити">×</button></div>
         {children}
       </section>
     </div>
@@ -889,7 +980,7 @@ function AppLoading({ activeView, user }: { activeView: ViewName; user: UserSumm
   return (
     <div className="app-frame app-loading">
       <Sidebar activeView={activeView} user={user} demo={false} />
-      <main className="app-main"><AppHeader activeView={activeView} user={user} onAdd={() => {}} /><div className="loading-grid" role="status" aria-label="Завантаження"><i /><i /><i /><i /></div></main>
+      <main className="app-main"><AppHeader activeView={activeView} user={user} onAdd={() => {}} addDisabled /><div className="loading-grid" role="status" aria-label="Завантаження"><i /><i /><i /><i /></div></main>
     </div>
   );
 }
@@ -903,7 +994,11 @@ function EmptyInline({ text }: { text: string }) {
 }
 
 function buildMonthlyChart(transactions: Transaction[]) {
-  const months = ["2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08"];
+  const anchor = new Date(`${CURRENT_MONTH}-01T00:00:00Z`);
+  const months = Array.from({ length: 6 }, (_, index) => {
+    const month = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - (5 - index), 1));
+    return month.toISOString().slice(0, 7);
+  });
   const values = months.map((month) => {
     const rows = transactions.filter((item) => item.date.startsWith(month));
     return {
@@ -925,34 +1020,4 @@ function buildDonutGradient(rows: Array<{ category: Category; amount: number }>,
     return `${category.color} ${start}% ${cursor}%`;
   });
   return `conic-gradient(${stops.join(", ")})`;
-}
-
-function csvEscape(value: string) {
-  const text = String(value ?? "");
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function parseCsv(text: string) {
-  const lines: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let quoted = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
-    if (char === '"' && quoted && text[i + 1] === '"') { field += '"'; i += 1; }
-    else if (char === '"') quoted = !quoted;
-    else if (char === "," && !quoted) { row.push(field); field = ""; }
-    else if ((char === "\n" || char === "\r") && !quoted) {
-      if (char === "\r" && text[i + 1] === "\n") i += 1;
-      row.push(field); field = "";
-      if (row.some((item) => item.trim())) lines.push(row);
-      row = [];
-    } else field += char;
-  }
-  row.push(field);
-  if (row.some((item) => item.trim())) lines.push(row);
-  const headers = (lines.shift() ?? []).map((item) => item.trim().replace(/^\ufeff/, "").toLowerCase());
-  const required = ["date", "type", "category", "description", "amount"];
-  if (!required.every((item) => headers.includes(item))) throw new Error("CSV повинен містити колонки date, type, category, description та amount.");
-  return lines.map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index]?.trim() ?? ""])) as Record<string, string>);
 }

@@ -7,6 +7,12 @@ import {
   unauthorized,
   userOwnsCategory,
 } from "../../../lib/api-user";
+import {
+  isIsoDate,
+  isOptionalTextWithin,
+  isPositiveMoney,
+  isTextWithin,
+} from "../../../lib/validation";
 
 export async function PATCH(
   request: Request,
@@ -30,23 +36,38 @@ export async function PATCH(
     const amountCents = Math.round(Number(payload.amountCents));
     const description = payload.description?.trim() ?? "";
     const date = payload.date?.trim() ?? "";
+    const merchant = payload.merchant?.trim() ?? "";
+    const note = payload.note?.trim() ?? "";
 
-    if (!transactionId || !categoryId || amountCents <= 0 || !description) {
+    if (
+      !Number.isSafeInteger(transactionId) ||
+      transactionId <= 0 ||
+      !Number.isSafeInteger(categoryId) ||
+      categoryId <= 0 ||
+      !isPositiveMoney(amountCents) ||
+      !isTextWithin(description, 160) ||
+      !isIsoDate(date) ||
+      !isOptionalTextWithin(merchant, 120) ||
+      !isOptionalTextWithin(note, 500)
+    ) {
       return badRequest("Перевірте обов’язкові поля транзакції.");
     }
     const category = await userOwnsCategory(context.authUser.userId, categoryId);
     if (!category) return badRequest("Категорію не знайдено.");
+    if (payload.type && payload.type !== category.type) {
+      return badRequest("Тип транзакції не відповідає категорії.");
+    }
 
     const [transaction] = await context.db
       .update(transactions)
       .set({
         categoryId,
-        type: payload.type === "income" ? "income" : category.type,
+        type: category.type,
         amountCents,
         description,
-        merchant: payload.merchant?.trim() ?? "",
+        merchant,
         date,
-        note: payload.note?.trim() ?? "",
+        note,
         updatedAt: new Date().toISOString(),
       })
       .where(

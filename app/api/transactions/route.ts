@@ -6,6 +6,12 @@ import {
   unauthorized,
   userOwnsCategory,
 } from "../../lib/api-user";
+import {
+  isIsoDate,
+  isOptionalTextWithin,
+  isPositiveMoney,
+  isTextWithin,
+} from "../../lib/validation";
 
 type TransactionPayload = {
   categoryId?: number;
@@ -26,28 +32,38 @@ export async function POST(request: Request) {
     const amountCents = Math.round(Number(payload.amountCents));
     const description = payload.description?.trim() ?? "";
     const date = payload.date?.trim() ?? "";
+    const merchant = payload.merchant?.trim() ?? "";
+    const note = payload.note?.trim() ?? "";
 
-    if (!categoryId || !Number.isInteger(amountCents) || amountCents <= 0) {
+    if (!Number.isSafeInteger(categoryId) || categoryId <= 0 || !isPositiveMoney(amountCents)) {
       return badRequest("Вкажіть категорію та суму більше нуля.");
     }
-    if (!description || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    if (
+      !isTextWithin(description, 160) ||
+      !isIsoDate(date) ||
+      !isOptionalTextWithin(merchant, 120) ||
+      !isOptionalTextWithin(note, 500)
+    ) {
       return badRequest("Вкажіть опис і коректну дату.");
     }
 
     const category = await userOwnsCategory(context.authUser.userId, categoryId);
     if (!category) return badRequest("Категорію не знайдено.");
+    if (payload.type && payload.type !== category.type) {
+      return badRequest("Тип транзакції не відповідає категорії.");
+    }
 
     const [transaction] = await context.db
       .insert(transactions)
       .values({
         userId: context.authUser.userId,
         categoryId,
-        type: payload.type === "income" ? "income" : category.type,
+        type: category.type,
         amountCents,
         description,
-        merchant: payload.merchant?.trim() ?? "",
+        merchant,
         date,
-        note: payload.note?.trim() ?? "",
+        note,
       })
       .returning();
 

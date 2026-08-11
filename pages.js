@@ -1,5 +1,10 @@
+import { csvEscape, parseCsv } from "./pages-csv.js";
+
 const STORAGE_KEY = "moneymap.github-pages.v1";
-const CURRENT_MONTH = "2026-08";
+const AUTH_SESSION_KEY = "moneymap.github-pages.auth";
+const DEMO_SESSION_KEY = "moneymap.github-pages.demo";
+const TODAY = new Date().toISOString().slice(0, 10);
+const CURRENT_MONTH = TODAY.slice(0, 7);
 
 const CATEGORY_SEED = [
   { id: 1, name: "Зарплата", type: "income", color: "#7BC96F", icon: "▣" },
@@ -34,7 +39,7 @@ const TRANSACTION_SEED = [
 ];
 
 const DEFAULT_STATE = {
-  profile: { name: "Влад", email: "demo@moneymap.app", registered: false, signedIn: false, passwordSalt: "", passwordHash: "" },
+  profile: { name: "Влад", email: "demo@moneymap.app", registered: false, passwordSalt: "", passwordHash: "" },
   categories: CATEGORY_SEED,
   transactions: TRANSACTION_SEED,
   budgets: [
@@ -67,6 +72,9 @@ const VIEW_META = {
 let state = loadState();
 let filters = { search: "", type: "all", category: "all", month: "all" };
 let toastTimer;
+let signedIn = sessionStorage.getItem(AUTH_SESSION_KEY) === "1";
+let demoMode = sessionStorage.getItem(DEMO_SESSION_KEY) === "1";
+let lastFocusedElement = null;
 const root = document.querySelector("#site-root");
 
 function clone(value) {
@@ -128,6 +136,12 @@ function monthLabel(value) {
   return new Intl.DateTimeFormat("uk-UA", { month: "short" }).format(new Date(`${value}-01T12:00:00`)).replace(".", "");
 }
 
+function isIsoDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
 function currentRoute() {
   const route = location.hash.replace(/^#\/?/, "").split("?")[0];
   return route || "home";
@@ -142,9 +156,13 @@ function render() {
   document.title = route === "home" ? "MoneyMap — особисті фінанси без хаосу" : `${VIEW_META[route]?.[0] ?? "MoneyMap"} — MoneyMap`;
   if (route === "home") root.innerHTML = landingView();
   else if (route === "login" || route === "register") root.innerHTML = authView(route);
+  else if (VIEW_META[route] && !signedIn && !demoMode) {
+    location.hash = "#login";
+    return;
+  }
   else if (VIEW_META[route]) root.innerHTML = appView(route);
   else location.hash = "#home";
-  window.scrollTo({ top: 0, behavior: "instant" });
+  window.scrollTo({ top: 0, behavior: "auto" });
 }
 
 function landingView() {
@@ -160,7 +178,7 @@ function landingView() {
           <span class="hero-badge"><i></i> Ваші гроші. Ваші правила.</span>
           <h1>Гроші під контролем.<br>Життя — <em>за планом.</em></h1>
           <p>MoneyMap перетворює щоденні витрати на ясну фінансову картину: бачте головне, тримайте бюджет і рухайтеся до своїх цілей.</p>
-          <div class="hero-actions"><a class="button button-lime button-large" href="#register">Створити свій MoneyMap <span>→</span></a><a class="button button-plain button-large" href="#dashboard">Переглянути демо <span>↗</span></a></div>
+          <div class="hero-actions"><a class="button button-lime button-large" href="#register">Створити свій MoneyMap <span>→</span></a><a class="button button-plain button-large" href="#dashboard" data-action="start-demo">Переглянути демо <span>↗</span></a></div>
           <div class="trust-row"><span>✓ Без банківської картки</span><span>✓ Дані у вашому браузері</span><span>✓ CSV імпорт</span></div>
           <span class="pages-badge">GitHub Pages edition — працює повністю на цій сторінці</span>
         </div>
@@ -168,7 +186,7 @@ function landingView() {
           <div class="visual-top"><span class="mini-brand"><b>M</b> MoneyMap</span><span class="visual-avatar">${esc(state.profile.name.slice(0,1).toUpperCase())}</span></div>
           <div class="visual-nav"><i></i><i></i><i></i><i></i></div>
           <div class="visual-content">
-            <div class="visual-heading"><span>Фінансова картина</span><button>＋ Додати</button></div>
+            <div class="visual-heading"><span>Фінансова картина</span><span class="visual-add" aria-hidden="true">＋ Додати</span></div>
             <div class="visual-balance"><small>Доступний баланс</small><strong>€7 280,50</strong><span>↑ 42% цього місяця</span><i class="visual-orbit"></i></div>
             <div class="visual-cards"><div><small>Доходи</small><strong>€3 200</strong></div><div><small>Витрати</small><strong>€1 305</strong></div><div><small>У цілях</small><strong>€6 940</strong></div></div>
             <div class="visual-chart"><span>Грошовий потік</span><div>${[36,62,48,78,66,91].map(height => `<i style="height:${height}%"></i>`).join("")}</div></div>
@@ -195,9 +213,9 @@ function landingView() {
         <div class="section-heading compact"><span class="eyebrow light">Три кроки до ясності</span><h2>Від хаосу до плану<br>за кілька хвилин.</h2></div>
         <ol><li><span>1</span><div><strong>Створіть профіль</strong><p>Ім’я та email зберігаються тільки у вашому браузері.</p></div></li><li><span>2</span><div><strong>Додайте рухи коштів</strong><p>Вручну або одним CSV-файлом.</p></div></li><li><span>3</span><div><strong>Дійте за картиною</strong><p>Налаштуйте бюджети й фінансові цілі.</p></div></li></ol>
       </section>
-      <section class="security-section" id="security"><div><span class="security-mark">◆</span><span class="eyebrow">Приватність локально</span><h2>Ваші цифри залишаються у вашому браузері.</h2><p>GitHub Pages‑версія не надсилає фінансові дані на сервер. Ви можете експортувати їх у CSV або очистити профіль одним кліком.</p></div><ul><li><span>01</span>Без банківських паролів</li><li><span>02</span>Локальне збереження на пристрої</li><li><span>03</span>Відкритий CSV-експорт</li></ul></section>
+      <section class="security-section" id="security"><div><span class="security-mark">◆</span><span class="eyebrow">Приватність локально</span><h2>Ваші цифри залишаються у вашому браузері.</h2><p>GitHub Pages‑версія не надсилає фінансові дані на сервер. Ви можете експортувати їх у CSV або безпечно очистити після підтвердження.</p></div><ul><li><span>01</span>Без банківських паролів</li><li><span>02</span>Локальне збереження на пристрої</li><li><span>03</span>Відкритий CSV-експорт</li></ul></section>
       <section class="final-cta"><span class="eyebrow light">Почніть із сьогодні</span><h2>Дайте кожному євро<br><em>своє місце на карті.</em></h2><a class="button button-lime button-large" href="#register">Створити MoneyMap <span>→</span></a></section>
-      <footer class="marketing-footer">${brand("marketing-brand")}<p>Особисті фінанси без хаосу.</p><div><a href="#login">Увійти</a><a href="#dashboard">Демо</a><span>© 2026 MoneyMap</span></div></footer>
+      <footer class="marketing-footer">${brand("marketing-brand")}<p>Особисті фінанси без хаосу.</p><div><a href="#login">Увійти</a><a href="#dashboard" data-action="start-demo">Демо</a><span>© 2026 MoneyMap</span></div></footer>
     </main>`;
 }
 
@@ -226,20 +244,22 @@ function authView(route) {
 
 function appView(view) {
   const [title, kicker] = VIEW_META[view];
+  const isDemo = demoMode && !signedIn;
+  const displayName = isDemo ? "Влад" : state.profile.name;
   return `
     <div class="app-frame pages-shell">
       <aside class="sidebar">
         ${brand()}
         <nav class="side-nav" aria-label="Основна навігація"><p>Мій простір</p>${NAV.map(([key,label,symbol])=>`<a class="${view===key?'active':''}" href="#${key}"><span aria-hidden="true">${symbol}</span>${label}</a>`).join("")}</nav>
         <div class="sidebar-spacer"></div>
-        <div class="money-note"><span>GitHub Pages</span><p>Ваші зміни автоматично зберігаються у цьому браузері.</p></div>
-        <div class="profile-chip"><span class="avatar">${esc(state.profile.name.slice(0,1).toUpperCase())}</span><span><strong>${esc(state.profile.name)}</strong><small>${esc(state.profile.registered ? state.profile.email : "Демо-профіль")}</small></span><button class="pages-user-menu" data-action="logout" title="Вийти">↗</button></div>
+        <div class="money-note"><span>GitHub Pages</span><p>Ваші зміни автоматично зберігаються у цьому браузері.</p><button class="pages-reset" data-action="reset-data">Очистити локальні дані</button></div>
+        <div class="profile-chip"><span class="avatar">${esc(displayName.slice(0,1).toUpperCase())}</span><span><strong>${esc(displayName)}</strong><small>${esc(isDemo ? "Демо-профіль" : state.profile.email)}</small></span><button class="pages-user-menu" data-action="logout" title="Вийти" aria-label="Вийти з профілю">↗</button></div>
       </aside>
       <main class="app-main">
         <header class="app-header">
           <div class="mobile-brand"><a class="brand brand-compact" href="#home"><span class="brand-mark"><i></i>M</span></a></div>
           <div><span class="eyebrow">${kicker}</span><h1>${title}</h1></div>
-          <div class="header-actions"><span class="header-avatar">${esc(state.profile.name.slice(0,1).toUpperCase())}</span><button class="button button-dark header-add" data-action="new-transaction" type="button"><span>＋</span> Додати транзакцію</button></div>
+          <div class="header-actions"><span class="header-avatar">${esc(displayName.slice(0,1).toUpperCase())}</span><button class="button button-dark header-add" data-action="new-transaction" type="button"><span>＋</span> Додати транзакцію</button></div>
         </header>
         <div class="pages-view">${viewContent(view)}</div>
       </main>
@@ -349,8 +369,8 @@ function goalsView() {
 
 function goalCard(goal) {
   const percent=Math.min(100,Math.round(goal.currentCents/goal.targetCents*100));
-  const days=Math.max(0,Math.ceil((new Date(goal.deadline)-new Date("2026-08-10"))/86400000));
-  return `<article class="goal-card"><div class="goal-icon" style="background:${goal.color}">${goal.icon}</div><div class="goal-status"><i class="${goal.status==='completed'?'done':''}"></i>${goal.status==='completed'?'Завершено':'Активна'}</div><h2>${esc(goal.name)}</h2><div class="goal-amount"><strong>${money(goal.currentCents)}</strong><span>/ ${money(goal.targetCents)}</span></div><div class="progress-track"><i style="width:${percent}%;background:${goal.color}"></i></div><div class="goal-meta"><span><strong>${percent}%</strong> зібрано</span><span><strong>${days}</strong> днів</span></div><button class="button button-soft" data-action="contribute" data-id="${goal.id}">${goal.status==='completed'?'Ціль досягнуто ✓':'Поповнити ціль →'}</button></article>`;
+  const days=Math.max(0,Math.ceil((new Date(goal.deadline)-new Date(TODAY))/86400000));
+  return `<article class="goal-card"><div class="goal-icon" style="background:${goal.color}">${goal.icon}</div><div class="goal-status"><i class="${goal.status==='completed'?'done':''}"></i>${goal.status==='completed'?'Завершено':'Активна'}</div><h2>${esc(goal.name)}</h2><div class="goal-amount"><strong>${money(goal.currentCents)}</strong><span>/ ${money(goal.targetCents)}</span></div><div class="progress-track"><i style="width:${percent}%;background:${goal.color}"></i></div><div class="goal-meta"><span><strong>${percent}%</strong> зібрано</span><span><strong>${days}</strong> днів</span></div><button class="button button-soft" data-action="contribute" data-id="${goal.id}" ${goal.status==='completed'?'disabled':''}>${goal.status==='completed'?'Ціль досягнуто ✓':'Поповнити ціль →'}</button></article>`;
 }
 
 function sum(rows,key) {
@@ -365,28 +385,46 @@ function openTransactionModal(id) {
   const transaction=id?state.transactions.find(row=>row.id===Number(id)):null;
   const type=transaction?.type||"expense";
   const categories=state.categories.filter(item=>item.type===type);
-  showModal(`<div class="pages-modal-head"><div><span class="eyebrow">MoneyMap</span><h2>${transaction?'Редагувати':'Нова'} транзакція</h2><p>Зміни одразу потраплять у звіти й бюджети</p></div><button class="pages-close" data-action="close-modal">×</button></div><form class="pages-form" data-form="transaction" data-id="${transaction?.id||''}"><label class="full"><span>Тип</span><select name="type" data-transaction-type><option value="expense" ${type==='expense'?'selected':''}>Витрата</option><option value="income" ${type==='income'?'selected':''}>Дохід</option></select></label><label class="full"><span>Опис *</span><input required name="description" value="${esc(transaction?.description||'')}" placeholder="Наприклад, продукти на тиждень"></label><label><span>Сума, € *</span><input required name="amount" inputmode="decimal" value="${transaction?transaction.amountCents/100:''}" placeholder="0,00"></label><label><span>Дата *</span><input required name="date" type="date" value="${transaction?.date||'2026-08-10'}"></label><label><span>Категорія *</span><select name="categoryId" data-category-select>${categories.map(item=>`<option value="${item.id}" ${transaction?.categoryId===item.id?'selected':''}>${esc(item.name)}</option>`).join("")}</select></label><label><span>Магазин / джерело</span><input name="merchant" value="${esc(transaction?.merchant||'')}" placeholder="Необов’язково"></label><label class="full"><span>Нотатка</span><textarea name="note" rows="3" placeholder="Додайте деталі">${esc(transaction?.note||'')}</textarea></label><p class="pages-form-error" hidden></p><div class="pages-form-actions"><button class="button button-ghost" data-action="close-modal" type="button">Скасувати</button><button class="button button-dark" type="submit">${transaction?'Зберегти зміни':'Додати транзакцію'}</button></div></form>`);
+  showModal(`<div class="pages-modal-head"><div><span class="eyebrow">MoneyMap</span><h2 id="pages-modal-title">${transaction?'Редагувати':'Нова'} транзакція</h2><p>Зміни одразу потраплять у звіти й бюджети</p></div><button class="pages-close" data-action="close-modal" aria-label="Закрити">×</button></div><form class="pages-form" data-form="transaction" data-id="${transaction?.id||''}"><label class="full"><span>Тип</span><select name="type" data-transaction-type><option value="expense" ${type==='expense'?'selected':''}>Витрата</option><option value="income" ${type==='income'?'selected':''}>Дохід</option></select></label><label class="full"><span>Опис *</span><input required maxlength="160" name="description" value="${esc(transaction?.description||'')}" placeholder="Наприклад, продукти на тиждень"></label><label><span>Сума, € *</span><input required name="amount" inputmode="decimal" value="${transaction?transaction.amountCents/100:''}" placeholder="0,00"></label><label><span>Дата *</span><input required name="date" type="date" value="${transaction?.date||TODAY}"></label><label><span>Категорія *</span><select name="categoryId" data-category-select>${categories.map(item=>`<option value="${item.id}" ${transaction?.categoryId===item.id?'selected':''}>${esc(item.name)}</option>`).join("")}</select></label><label><span>Магазин / джерело</span><input maxlength="120" name="merchant" value="${esc(transaction?.merchant||'')}" placeholder="Необов’язково"></label><label class="full"><span>Нотатка</span><textarea maxlength="500" name="note" rows="3" placeholder="Додайте деталі">${esc(transaction?.note||'')}</textarea></label><p class="pages-form-error" role="alert" hidden></p><div class="pages-form-actions"><button class="button button-ghost" data-action="close-modal" type="button">Скасувати</button><button class="button button-dark" type="submit">${transaction?'Зберегти зміни':'Додати транзакцію'}</button></div></form>`);
 }
 
 function openBudgetModal(id) {
   const budget=id?state.budgets.find(item=>item.id===Number(id)):null;
   const categories=state.categories.filter(item=>item.type==="expense");
-  showModal(`<div class="pages-modal-head"><div><span class="eyebrow">MoneyMap</span><h2>${budget?'Змінити':'Новий'} бюджет</h2><p>Окремий ліміт для однієї категорії</p></div><button class="pages-close" data-action="close-modal">×</button></div><form class="pages-form" data-form="budget" data-id="${budget?.id||''}"><label class="full"><span>Категорія</span><select name="categoryId">${categories.map(item=>`<option value="${item.id}" ${budget?.categoryId===item.id?'selected':''}>${esc(item.name)}</option>`).join("")}</select></label><label><span>Місяць</span><input name="month" type="month" value="${budget?.month||CURRENT_MONTH}"></label><label><span>Ліміт, €</span><input required name="limit" inputmode="decimal" value="${budget?budget.limitCents/100:''}" placeholder="500"></label><p class="pages-form-error" hidden></p><div class="pages-form-actions"><button class="button button-ghost" data-action="close-modal" type="button">Скасувати</button><button class="button button-dark" type="submit">Зберегти бюджет</button></div></form>`);
+  showModal(`<div class="pages-modal-head"><div><span class="eyebrow">MoneyMap</span><h2 id="pages-modal-title">${budget?'Змінити':'Новий'} бюджет</h2><p>Окремий ліміт для однієї категорії</p></div><button class="pages-close" data-action="close-modal" aria-label="Закрити">×</button></div><form class="pages-form" data-form="budget" data-id="${budget?.id||''}"><label class="full"><span>Категорія</span><select name="categoryId">${categories.map(item=>`<option value="${item.id}" ${budget?.categoryId===item.id?'selected':''}>${esc(item.name)}</option>`).join("")}</select></label><label><span>Місяць</span><input required name="month" type="month" value="${budget?.month||CURRENT_MONTH}"></label><label><span>Ліміт, €</span><input required name="limit" inputmode="decimal" value="${budget?budget.limitCents/100:''}" placeholder="500"></label><p class="pages-form-error" role="alert" hidden></p><div class="pages-form-actions"><button class="button button-ghost" data-action="close-modal" type="button">Скасувати</button><button class="button button-dark" type="submit">Зберегти бюджет</button></div></form>`);
 }
 
 function openGoalModal() {
-  showModal(`<div class="pages-modal-head"><div><span class="eyebrow">MoneyMap</span><h2>Нова фінансова ціль</h2><p>Перетворіть мрію на зрозумілий план</p></div><button class="pages-close" data-action="close-modal">×</button></div><form class="pages-form" data-form="goal"><label class="full"><span>Назва цілі</span><input required name="name" placeholder="Наприклад, подорож до Японії"></label><label><span>Потрібна сума, €</span><input required name="target" inputmode="decimal" placeholder="3000"></label><label><span>Вже накопичено, €</span><input name="current" inputmode="decimal" placeholder="0"></label><label><span>Дедлайн</span><input required name="deadline" type="date" value="2027-06-01"></label><label><span>Колір</span><select name="color"><option value="#C7F34A">Лайм</option><option value="#A7D8FF">Блакитний</option><option value="#F5A782">Кораловий</option><option value="#B8A8E8">Лавандовий</option></select></label><p class="pages-form-error" hidden></p><div class="pages-form-actions"><button class="button button-ghost" data-action="close-modal" type="button">Скасувати</button><button class="button button-dark" type="submit">Створити ціль</button></div></form>`);
+  showModal(`<div class="pages-modal-head"><div><span class="eyebrow">MoneyMap</span><h2 id="pages-modal-title">Нова фінансова ціль</h2><p>Перетворіть мрію на зрозумілий план</p></div><button class="pages-close" data-action="close-modal" aria-label="Закрити">×</button></div><form class="pages-form" data-form="goal"><label class="full"><span>Назва цілі</span><input required maxlength="120" name="name" placeholder="Наприклад, подорож до Японії"></label><label><span>Потрібна сума, €</span><input required name="target" inputmode="decimal" placeholder="3000"></label><label><span>Вже накопичено, €</span><input name="current" inputmode="decimal" placeholder="0"></label><label><span>Дедлайн</span><input required name="deadline" type="date" value="2027-06-01"></label><label><span>Колір</span><select name="color"><option value="#C7F34A">Лайм</option><option value="#A7D8FF">Блакитний</option><option value="#F5A782">Кораловий</option><option value="#B8A8E8">Лавандовий</option></select></label><p class="pages-form-error" role="alert" hidden></p><div class="pages-form-actions"><button class="button button-ghost" data-action="close-modal" type="button">Скасувати</button><button class="button button-dark" type="submit">Створити ціль</button></div></form>`);
+}
+
+function openContributionModal(id) {
+  const goal=state.goals.find(item=>item.id===Number(id));
+  if (!goal||goal.status==="completed") return;
+  const remaining=Math.max(0,goal.targetCents-goal.currentCents);
+  showModal(`<div class="pages-modal-head"><div><span class="eyebrow">MoneyMap</span><h2 id="pages-modal-title">Поповнити «${esc(goal.name)}»</h2><p>До цілі залишилося ${money(remaining)}</p></div><button class="pages-close" data-action="close-modal" aria-label="Закрити">×</button></div><form class="pages-form" data-form="contribution" data-id="${goal.id}"><label class="full"><span>Сума поповнення, €</span><input required name="amount" inputmode="decimal" placeholder="100"></label><p class="pages-form-error" role="alert" hidden></p><div class="pages-form-actions"><button class="button button-ghost" data-action="close-modal" type="button">Скасувати</button><button class="button button-dark" type="submit">Додати до цілі</button></div></form>`);
+}
+
+function openResetModal() {
+  showModal(`<div class="pages-modal-head"><div><span class="eyebrow pages-danger">Незворотна дія</span><h2 id="pages-modal-title">Очистити локальні дані?</h2><p>Транзакції, бюджети, цілі та локальний профіль буде видалено з цього браузера.</p></div><button class="pages-close" data-action="close-modal" aria-label="Закрити">×</button></div><div class="pages-form-actions pages-confirm-actions"><button class="button button-ghost" data-action="close-modal" type="button">Скасувати</button><button class="button button-dark" data-action="confirm-reset" type="button">Так, очистити</button></div>`);
 }
 
 function showModal(content) {
   const host=document.querySelector("#modal-host");
   if (!host) return;
-  host.innerHTML=`<div class="pages-modal-backdrop" data-action="backdrop"><section class="pages-modal" role="dialog" aria-modal="true">${content}</section></div>`;
+  lastFocusedElement=document.activeElement;
+  host.innerHTML=`<div class="pages-modal-backdrop" data-action="backdrop"><section class="pages-modal" role="dialog" aria-modal="true" aria-labelledby="pages-modal-title" tabindex="-1">${content}</section></div>`;
+  document.body.classList.add("modal-open");
+  const firstControl=host.querySelector("form input:not([type='hidden']), form select, form textarea, form button")||host.querySelector(".pages-modal button");
+  firstControl?.focus();
 }
 
 function closeModal() {
   const host=document.querySelector("#modal-host");
   if (host) host.innerHTML="";
+  document.body.classList.remove("modal-open");
+  if (lastFocusedElement?.isConnected) lastFocusedElement.focus();
+  lastFocusedElement=null;
 }
 
 function showFormError(form,message) {
@@ -409,7 +447,8 @@ function toast(message) {
 function saveTransaction(form) {
   const values=Object.fromEntries(new FormData(form));
   const amountCents=Math.round(Number(String(values.amount).replace(",","."))*100);
-  if (!values.description.trim()||!Number.isFinite(amountCents)||amountCents<=0) return showFormError(form,"Вкажіть опис і коректну суму.");
+  const category=state.categories.find(item=>item.id===Number(values.categoryId)&&item.type===values.type);
+  if (!values.description.trim()||!Number.isFinite(amountCents)||amountCents<=0||!category||!isIsoDate(String(values.date))) return showFormError(form,"Перевірте опис, категорію, дату та суму.");
   const id=Number(form.dataset.id)||nextId(state.transactions);
   const row={id,categoryId:Number(values.categoryId),type:values.type,amountCents,description:values.description.trim(),merchant:values.merchant.trim(),date:values.date,note:values.note.trim()};
   const index=state.transactions.findIndex(item=>item.id===id);
@@ -420,7 +459,7 @@ function saveTransaction(form) {
 function saveBudget(form) {
   const values=Object.fromEntries(new FormData(form));
   const limitCents=Math.round(Number(String(values.limit).replace(",","."))*100);
-  if (!Number.isFinite(limitCents)||limitCents<=0) return showFormError(form,"Вкажіть коректний ліміт.");
+  if (!Number.isFinite(limitCents)||limitCents<=0||!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(values.month))) return showFormError(form,"Вкажіть коректний місяць і ліміт.");
   const existing=state.budgets.find(item=>item.categoryId===Number(values.categoryId)&&item.month===values.month);
   const id=Number(form.dataset.id)||existing?.id||nextId(state.budgets);
   const budget={id,categoryId:Number(values.categoryId),month:values.month,limitCents};
@@ -432,7 +471,7 @@ function saveGoal(form) {
   const values=Object.fromEntries(new FormData(form));
   const targetCents=Math.round(Number(String(values.target).replace(",","."))*100);
   const currentCents=Math.round(Number(String(values.current||0).replace(",","."))*100);
-  if (!values.name.trim()||targetCents<=0||currentCents<0||currentCents>targetCents) return showFormError(form,"Перевірте назву та суми цілі.");
+  if (!values.name.trim()||!Number.isFinite(targetCents)||!Number.isFinite(currentCents)||targetCents<=0||currentCents<0||currentCents>targetCents||!isIsoDate(String(values.deadline))) return showFormError(form,"Перевірте назву, суми та дедлайн цілі.");
   state.goals.unshift({id:nextId(state.goals),name:values.name.trim(),targetCents,currentCents,deadline:values.deadline,color:values.color,icon:"◎",status:currentCents>=targetCents?"completed":"active"});
   persist(); closeModal(); render(); toast("Нову ціль створено");
 }
@@ -441,56 +480,35 @@ function nextId(rows) {
   return Math.max(0,...rows.map(row=>Number(row.id)||0))+1;
 }
 
-function contribute(id) {
-  const goal=state.goals.find(item=>item.id===Number(id));
-  if (!goal||goal.status==="completed") return;
-  const input=window.prompt(`Скільки додати до цілі «${goal.name}»?`,"100");
-  if (input===null) return;
-  const amount=Math.round(Number(input.replace(",","."))*100);
-  if (!Number.isFinite(amount)||amount<=0) return toast("Вкажіть суму більше нуля");
+function saveContribution(form) {
+  const goal=state.goals.find(item=>item.id===Number(form.dataset.id));
+  const values=Object.fromEntries(new FormData(form));
+  const amount=Math.round(Number(String(values.amount).replace(",","."))*100);
+  if (!goal||goal.status==="completed") return closeModal();
+  if (!Number.isFinite(amount)||amount<=0) return showFormError(form,"Вкажіть суму більше нуля.");
   goal.currentCents=Math.min(goal.targetCents,goal.currentCents+amount);
   if (goal.currentCents>=goal.targetCents) goal.status="completed";
-  persist(); render(); toast("Прогрес цілі оновлено");
-}
-
-function csvEscape(value) {
-  const text=String(value??"");
-  return /[",\n]/.test(text)?`"${text.replaceAll('"','""')}"`:text;
+  persist(); closeModal(); render(); toast("Прогрес цілі оновлено");
 }
 
 function exportCsv() {
   const rows=[["date","type","category","description","merchant","amount","note"],...filteredTransactions().map(row=>[row.date,row.type,state.categories.find(item=>item.id===row.categoryId)?.name||"",row.description,row.merchant,(row.amountCents/100).toFixed(2),row.note])];
   const csv=`\ufeff${rows.map(row=>row.map(csvEscape).join(",")).join("\n")}`;
   const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
-  const link=document.createElement("a"); link.href=url; link.download="moneymap-transactions.csv"; link.click(); URL.revokeObjectURL(url); toast("CSV експортовано");
-}
-
-function parseCsv(text) {
-  const rows=[]; let row=[]; let field=""; let quoted=false;
-  for(let i=0;i<text.length;i++){
-    const char=text[i];
-    if(char==='"'&&quoted&&text[i+1]==='"'){field+='"';i++;}
-    else if(char==='"') quoted=!quoted;
-    else if(char===","&&!quoted){row.push(field);field="";}
-    else if((char==="\n"||char==="\r")&&!quoted){if(char==="\r"&&text[i+1]==="\n")i++;row.push(field);field="";if(row.some(item=>item.trim()))rows.push(row);row=[];}
-    else field+=char;
-  }
-  row.push(field); if(row.some(item=>item.trim()))rows.push(row);
-  const headers=(rows.shift()||[]).map(item=>item.trim().replace(/^\ufeff/,"").toLowerCase());
-  const required=["date","type","category","description","amount"];
-  if(!required.every(item=>headers.includes(item))) throw new Error("Потрібні колонки date, type, category, description та amount.");
-  return rows.map(values=>Object.fromEntries(headers.map((header,index)=>[header,values[index]?.trim()||""])));
+  const link=document.createElement("a"); link.href=url; link.download=`moneymap-transactions-${CURRENT_MONTH}.csv`; document.body.append(link); link.click(); link.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000); toast("CSV експортовано");
 }
 
 async function importCsv(file) {
   try {
     const rows=parseCsv(await file.text());
+    if(rows.length===0||rows.length>500) throw new Error("CSV має містити від 1 до 500 рядків.");
     const imported=rows.map((row,index)=>{
-      const type=row.type==="income"?"income":"expense";
+      if(row.type!=="income"&&row.type!=="expense") throw new Error(`Помилка у рядку ${index+2}: тип має бути income або expense.`);
+      const type=row.type;
       const category=state.categories.find(item=>item.type===type&&item.name.toLocaleLowerCase("uk")===row.category.toLocaleLowerCase("uk"));
       const amount=Number(row.amount.replace(",","."));
-      if(!category||!row.date||!row.description||!Number.isFinite(amount)||amount<=0) throw new Error(`Помилка у рядку ${index+2}.`);
-      return {id:nextId(state.transactions)+index,categoryId:category.id,type,amountCents:Math.round(amount*100),description:row.description,merchant:row.merchant||"",date:row.date,note:row.note||""};
+      if(!category||!isIsoDate(row.date)||!row.description.trim()||!Number.isFinite(amount)||amount<=0) throw new Error(`Помилка у рядку ${index+2}: перевірте дату, категорію, опис і суму.`);
+      return {id:nextId(state.transactions)+index,categoryId:category.id,type,amountCents:Math.round(amount*100),description:row.description.trim().slice(0,160),merchant:(row.merchant||"").slice(0,120),date:row.date,note:(row.note||"").slice(0,500)};
     });
     state.transactions=[...imported,...state.transactions]; persist(); render(); toast(`Імпортовано: ${imported.length}`);
   } catch(error) { toast(error.message||"Не вдалося імпортувати CSV"); }
@@ -511,12 +529,39 @@ root.addEventListener("click",event=>{
   if(action==="new-budget") openBudgetModal();
   if(action==="edit-budget") openBudgetModal(trigger.dataset.id);
   if(action==="new-goal") openGoalModal();
-  if(action==="contribute") contribute(trigger.dataset.id);
+  if(action==="contribute") openContributionModal(trigger.dataset.id);
+  if(action==="reset-data") openResetModal();
+  if(action==="confirm-reset") {
+    localStorage.removeItem(STORAGE_KEY);
+    sessionStorage.removeItem(AUTH_SESSION_KEY);
+    sessionStorage.removeItem(DEMO_SESSION_KEY);
+    state=clone(DEFAULT_STATE);
+    filters={search:"",type:"all",category:"all",month:"all"};
+    signedIn=false;
+    demoMode=false;
+    closeModal();
+    location.hash="#home";
+    render();
+    toast("Локальні дані очищено");
+  }
+  if(action==="start-demo") {
+    signedIn=false;
+    demoMode=true;
+    sessionStorage.removeItem(AUTH_SESSION_KEY);
+    sessionStorage.setItem(DEMO_SESSION_KEY,"1");
+  }
   if(action==="close-modal") closeModal();
   if(action==="backdrop"&&event.target===trigger) closeModal();
   if(action==="export-csv") exportCsv();
   if(action==="import-csv") document.querySelector("#csv-import")?.click();
-  if(action==="logout") { state.profile.signedIn=false; persist(); location.hash="#home"; toast("Ви вийшли з локального профілю"); }
+  if(action==="logout") {
+    signedIn=false;
+    demoMode=false;
+    sessionStorage.removeItem(AUTH_SESSION_KEY);
+    sessionStorage.removeItem(DEMO_SESSION_KEY);
+    location.hash="#home";
+    toast("Ви вийшли з локального профілю");
+  }
 });
 
 root.addEventListener("submit",async event=>{
@@ -533,21 +578,35 @@ root.addEventListener("submit",async event=>{
     error.hidden=true;
     button.disabled=true;
     if(password.length<8){reject("Пароль має містити щонайменше 8 символів.");return;}
-    if(form.dataset.mode==="register"){
-      const salt=randomSalt();
-      state.profile={name:String(values.name).trim(),email,registered:true,signedIn:true,passwordSalt:salt,passwordHash:await passwordDigest(password,salt)};
-      persist(); location.hash="#dashboard"; toast("Профіль створено");
-    } else {
-      if(!state.profile.registered||!state.profile.passwordSalt||email!==state.profile.email.toLocaleLowerCase("uk")){reject("Неправильний email або пароль.");return;}
-      const digest=await passwordDigest(password,state.profile.passwordSalt);
-      if(digest!==state.profile.passwordHash){reject("Неправильний email або пароль.");return;}
-      state.profile.signedIn=true;
-      persist(); location.hash="#dashboard"; toast("Вхід виконано");
+    try {
+      if(form.dataset.mode==="register"){
+        const name=String(values.name).trim();
+        if(!name){reject("Вкажіть ім’я профілю.");return;}
+        const salt=randomSalt();
+        state.profile={name,email,registered:true,passwordSalt:salt,passwordHash:await passwordDigest(password,salt)};
+        signedIn=true;
+        demoMode=false;
+        sessionStorage.setItem(AUTH_SESSION_KEY,"1");
+        sessionStorage.removeItem(DEMO_SESSION_KEY);
+        persist(); location.hash="#dashboard"; toast("Профіль створено");
+      } else {
+        if(!state.profile.registered||!state.profile.passwordSalt||email!==state.profile.email.toLocaleLowerCase("uk")){reject("Неправильний email або пароль.");return;}
+        const digest=await passwordDigest(password,state.profile.passwordSalt);
+        if(digest!==state.profile.passwordHash){reject("Неправильний email або пароль.");return;}
+        signedIn=true;
+        demoMode=false;
+        sessionStorage.setItem(AUTH_SESSION_KEY,"1");
+        sessionStorage.removeItem(DEMO_SESSION_KEY);
+        location.hash="#dashboard"; toast("Вхід виконано");
+      }
+    } catch {
+      reject("Не вдалося захистити локальний профіль. Оновіть сторінку та спробуйте ще раз.");
     }
   }
   if(form.dataset.form==="transaction") saveTransaction(form);
   if(form.dataset.form==="budget") saveBudget(form);
   if(form.dataset.form==="goal") saveGoal(form);
+  if(form.dataset.form==="contribution") saveContribution(form);
 });
 
 root.addEventListener("change",event=>{
@@ -572,4 +631,20 @@ root.addEventListener("input",event=>{
 });
 
 window.addEventListener("hashchange",render);
+window.addEventListener("keydown",event=>{
+  const dialog=document.querySelector(".pages-modal");
+  if(!dialog) return;
+  if(event.key==="Escape"){
+    event.preventDefault();
+    closeModal();
+    return;
+  }
+  if(event.key!=="Tab") return;
+  const focusable=[...dialog.querySelectorAll("button:not([disabled]), input:not([disabled]):not([type='hidden']), select:not([disabled]), textarea:not([disabled]), a[href]")].filter(element=>element.offsetParent!==null);
+  if(!focusable.length) return;
+  const first=focusable[0];
+  const last=focusable[focusable.length-1];
+  if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+  else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+});
 render();

@@ -35,7 +35,7 @@ export default function Home() {
           <div className="visual-top"><span className="mini-brand"><b>M</b> MoneyMap</span><span className="visual-avatar">В</span></div>
           <div className="visual-nav"><i /><i /><i /><i /></div>
           <div className="visual-content">
-            <div className="visual-heading"><span>Фінансова картина</span><button>＋ Додати</button></div>
+            <div className="visual-heading"><span>Фінансова картина</span><span className="visual-add" aria-hidden="true">＋ Додати</span></div>
             <div className="visual-balance"><small>Доступний баланс</small><strong>€7 280,50</strong><span>↑ 42% цього місяця</span><i className="visual-orbit" /></div>
             <div className="visual-cards"><div><small>Доходи</small><strong>€3 200</strong></div><div><small>Витрати</small><strong>€1 305</strong></div><div><small>У цілях</small><strong>€6 940</strong></div></div>
             <div className="visual-chart"><span>Грошовий потік</span><div>{[36, 62, 48, 78, 66, 91].map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}</div></div>

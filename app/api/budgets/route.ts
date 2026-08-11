@@ -6,6 +6,7 @@ import {
   unauthorized,
   userOwnsCategory,
 } from "../../lib/api-user";
+import { isPositiveMoney, isYearMonth } from "../../lib/validation";
 
 export async function POST(request: Request) {
   try {
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
     const month = payload.month?.trim() ?? "";
     const category = await userOwnsCategory(context.authUser.userId, categoryId);
 
-    if (!category || category.type !== "expense" || limitCents <= 0 || !/^\d{4}-\d{2}$/.test(month)) {
+    if (!category || category.type !== "expense" || !isPositiveMoney(limitCents) || !isYearMonth(month)) {
       return badRequest("Перевірте категорію, місяць і ліміт бюджету.");
     }
 
