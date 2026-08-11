@@ -3,16 +3,28 @@ import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
 const root = new URL("../", import.meta.url);
+let workerPromise;
 
-async function render(pathname = "/") {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
+function loadWorker() {
+  if (!workerPromise) {
+    const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+    workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
+    workerPromise = import(workerUrl.href).then(({ default: worker }) => worker);
+  }
+  return workerPromise;
+}
+
+async function workerFetch(pathname, headers = {}) {
+  const worker = await loadWorker();
   return worker.fetch(
-    new Request(`http://localhost${pathname}`, { headers: { accept: "text/html", host: "localhost" } }),
+    new Request(`http://localhost${pathname}`, { headers: { host: "localhost", ...headers } }),
     { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
     { waitUntil() {}, passThroughOnException() {} },
   );
+}
+
+async function render(pathname = "/") {
+  return workerFetch(pathname, { accept: "text/html" });
 }
 
 test("server-renders the MoneyMap landing page", async () => {
@@ -36,4 +48,40 @@ test("ships the social card and removes the disposable starter preview", async (
   await assert.rejects(access(new URL("app/_sites-preview/SkeletonPreview.tsx", root)));
   assert.match(layout, /\/og\.png/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+});
+
+test("protects private pages and APIs for anonymous visitors", async () => {
+  const protectedPage = await readFile(
+    new URL("app/components/protected-finance-page.tsx", root),
+    "utf8",
+  );
+  const apiRoutes = await Promise.all(
+    [
+      "app/api/bootstrap/route.ts",
+      "app/api/budgets/route.ts",
+      "app/api/goals/route.ts",
+      "app/api/goals/[id]/route.ts",
+      "app/api/transactions/route.ts",
+      "app/api/transactions/[id]/route.ts",
+      "app/api/transactions/import/route.ts",
+    ].map((path) => readFile(new URL(path, root), "utf8")),
+  );
+
+  assert.match(protectedPage, /requireChatGPTUser\(returnTo\)/);
+  for (const route of apiRoutes) {
+    assert.match(route, /requireApiUser\(\)/);
+    assert.match(route, /unauthorized\(\)/);
+  }
+});
+
+test("keeps the GitHub Pages edition accessible and free of system prompts", async () => {
+  const [html, script, styles] = await Promise.all([
+    readFile(new URL("index.html", root), "utf8"),
+    readFile(new URL("pages.js", root), "utf8"),
+    readFile(new URL("pages.css", root), "utf8"),
+  ]);
+  assert.match(html, /<noscript>/);
+  assert.doesNotMatch(script, /window\.prompt|prompt\(/);
+  assert.match(script, /AUTH_SESSION_KEY/);
+  assert.match(styles, /\.pages-static \.table-body \.transaction-row/);
 });
